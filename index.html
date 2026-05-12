@@ -173,9 +173,9 @@ main{flex:1;overflow:hidden;position:relative}
 .btn-send:disabled{opacity:.4;cursor:not-allowed}
 .btn-file{
   width:44px;height:44px;flex-shrink:0;
-  background:var(--s2);border:1px solid var(--border);border-radius:12px;
-  font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;
-  transition:.15s;
+  background:var(--s2);border:1px solid rgba(177,59,255,.45);border-radius:12px;
+  font-size:22px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+  transition:.15s;text-decoration:none;
 }
 .btn-file:active{background:var(--s3);transform:scale(.93)}
 .upload-prog{
@@ -671,8 +671,9 @@ async function handleChat(text){
   }
 
   if(phase==='idle'){
-    // Edit commands
-    if(/^(?:עדכן|שנה|ערוך|תעדכן|תשנה|תערוך)/i.test(text)){handleEditCommand(text);return;}
+    // Edit commands — detect anywhere in the message, not just at start
+    const isEdit=/(?:תשנה|שנה|עדכן|תעדכן|תערוך|ערוך)\s+(?:את\s+)?(?:ה?שם|ה?כותרת|ה?דחיפות|ה?עדיפות|ה?תאריך)|(?:המשימה|הפריט|הפגישה|הלקוח|הקישור)\s+(?:הקיימת?|הזאת?|בשם|עם\s+השם)/i.test(text)||/^(?:עדכן|שנה|ערוך|תעדכן|תשנה|תערוך)/i.test(text);
+    if(isEdit){handleEditCommand(text);return;}
 
     addBotBubble('⏳ מנתח...');
     const parsed=await smartParse(text);
@@ -1139,16 +1140,33 @@ function parseEditText(text){
 }
 function handleEditCommand(text){
   const items=data.items.filter(i=>i.status!=='done');
-  // Find item name in quotes or after "את ה?"
-  const qMatches=[...text.matchAll(/["«"'](.+?)["»"']/g)].map(m=>m[1].trim());
-  const atMatch=text.match(/את\s+ה?([֐-׿\w\s]{3,35})(?=\s+ת(?:עדכן|שנה|ערוך)|,)/);
-  if(atMatch)qMatches.unshift(atMatch[1].trim());
+  const candidates=[];
+
+  // 1. Quoted strings: "שם הפריט"
+  [...text.matchAll(/["«"'](.+?)["»"']/g)].forEach(m=>candidates.push(m[1].trim()));
+
+  // 2. After "עם השם X" or "בשם X"
+  const withName=text.match(/(?:עם\s+ה?שם|בשם)\s+(.+?)(?:\.|,|$)/i);
+  if(withName)candidates.push(withName[1].trim());
+
+  // 3. After "המשימה/הפריט הקיים/הזאת X"
+  const itemRef=text.match(/(?:המשימה|הפריט|הפגישה|הלקוח|הקישור)\s+(?:הקיימת?|הזאת?)?\s+(.+?)(?:\.|,|\s+ת(?:שנה|עדכן))/i);
+  if(itemRef)candidates.push(itemRef[1].trim());
+
+  // 4. After "את ה?"
+  const atMatch=text.match(/את\s+ה?([֐-׿\w\s]{3,40})(?=\s+ת(?:עדכן|שנה|ערוך)|,)/);
+  if(atMatch)candidates.push(atMatch[1].trim());
+
   let found=null;
-  for(const q of qMatches){found=fuzzyFind(q,items);if(found)break;}
+  for(const q of candidates){found=fuzzyFind(q,items);if(found)break;}
+
   if(!found){
-    // Broad search in all words
-    const words=text.split(/[\s,."«»"']+/).filter(w=>w.length>3);
-    for(const w of words){found=items.find(i=>i.title.includes(w));if(found)break;}
+    // Broad fallback: any word longer than 3 chars that matches an item title
+    const words=text.replace(/[.,!?]/g,' ').split(/\s+/).filter(w=>w.length>3);
+    for(const w of words){
+      const f=items.find(i=>i.title.includes(w));
+      if(f&&!['תשנה','עדכן','שנה','ערוך','שלי','שלה','שלו','הקיים'].includes(w)){found=f;break;}
+    }
   }
   if(!found){
     addBotBubble('לא מצאתי את הפריט 🤔\n\nנסה לכתוב כך:\nעדכן "שם הפריט" — תשנה כותרת ל-"שם חדש"');
@@ -1290,9 +1308,7 @@ async function init(){
   }
   // Keyboard shortcuts
   document.getElementById('pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
-  document.getElementById('chatInput').addEventListener('keydown',e=>{
-    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat();}
-  });
+  // Enter = new line only. Use send button to send.
   document.getElementById('chatInput').addEventListener('input',function(){
     this.style.height='auto';this.style.height=Math.min(this.scrollHeight,110)+'px';
   });
