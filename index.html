@@ -171,6 +171,17 @@ main{flex:1;overflow:hidden;position:relative}
 }
 .btn-send:active{transform:scale(.9)}
 .btn-send:disabled{opacity:.4;cursor:not-allowed}
+.btn-file{
+  width:44px;height:44px;flex-shrink:0;
+  background:var(--s2);border:1px solid var(--border);border-radius:12px;
+  font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:.15s;
+}
+.btn-file:active{background:var(--s3);transform:scale(.93)}
+.upload-prog{
+  height:3px;border-radius:2px;background:var(--s3);margin-top:6px;overflow:hidden;
+}
+.upload-prog-bar{height:100%;background:var(--grad);width:0%;transition:width .3s;border-radius:2px}
 
 /* ══ CALENDAR ═══════════════════════════════════════════════ */
 .sec-hd{padding:14px 16px 8px;font-size:12px;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:.07em;display:flex;align-items:center;gap:8px}
@@ -311,7 +322,9 @@ select.sinp{-webkit-appearance:none;appearance:none;cursor:pointer}
       <div class="chat-ft">
         <div id="cchips" style="display:flex;gap:6px;overflow-x:auto;padding-bottom:7px;scrollbar-width:none"></div>
         <div class="chat-row">
-          <textarea id="chatInput" rows="1" placeholder="קישור, משימה, פגישה... כתוב בחופשיות"></textarea>
+          <label class="btn-file" for="fileInput" title="העלאת קובץ">📎</label>
+          <input type="file" id="fileInput" accept="application/pdf,image/*,.doc,.docx,.xlsx,.pptx,.txt,.pages,.numbers,.key,.csv" style="display:none" onchange="handleFileSelect(this)">
+          <textarea id="chatInput" rows="1" placeholder="קישור, משימה, פגישה, קובץ..."></textarea>
           <button class="btn-send" id="sendBtn" onclick="sendChat()">➤</button>
         </div>
       </div>
@@ -975,6 +988,79 @@ function delItem(id){
   saveData();closeItem();renderLib();renderCal();updateHeader();showToast('🗑️ נמחק');
 }
 function openUrl(url){window.open(url,'_blank');}
+
+// ═══════════════════════════════════════════════════════════
+// FILE UPLOAD
+// ═══════════════════════════════════════════════════════════
+const FILE_ICONS={pdf:'📄',jpg:'🖼️',jpeg:'🖼️',png:'🖼️',gif:'🖼️',heic:'🖼️',heif:'🖼️',webp:'🖼️',doc:'📝',docx:'📝',xls:'📊',xlsx:'📊',ppt:'📊',pptx:'📊',txt:'📋',csv:'📋',pages:'📝',numbers:'📊',key:'📊'};
+function fileIcon(name){const ext=(name.split('.').pop()||'').toLowerCase();return FILE_ICONS[ext]||'📎';}
+function fmtSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB';}
+
+function arrayBufToB64(buffer){
+  const bytes=new Uint8Array(buffer);
+  let bin='';const chunk=8192;
+  for(let i=0;i<bytes.length;i+=chunk){bin+=String.fromCharCode(...bytes.subarray(i,i+chunk));}
+  return btoa(bin);
+}
+
+async function uploadFileToGH(file){
+  const ts=Date.now();
+  const safe=file.name.replace(/[^a-zA-Z0-9א-ת._-]/g,'_');
+  const path=`files/${ts}-${safe}`;
+  const buf=await file.arrayBuffer();
+  const b64=arrayBufToB64(buf);
+  const r=await fetch(`https://api.github.com/repos/${REPO}/contents/${path}`,{
+    method:'PUT',
+    headers:{'Authorization':`Bearer ${GH_TOKEN}`,'Content-Type':'application/json'},
+    body:JSON.stringify({message:`upload ${safe}`,content:b64})
+  });
+  if(!r.ok)throw new Error('upload failed');
+  const j=await r.json();
+  return{rawUrl:`https://raw.githubusercontent.com/${REPO}/main/${path}`,htmlUrl:j.content.html_url,path};
+}
+
+async function handleFileSelect(input){
+  const file=input.files?.[0];if(!file){return;}
+  input.value='';
+  const MAX=30*1024*1024;
+  if(file.size>MAX){addBotBubble(`⚠️ הקובץ גדול מדי. מקסימום 30MB.\nהקובץ שלך: ${fmtSize(file.size)}`);return;}
+
+  const ico=fileIcon(file.name);
+  addUserBubble(`${ico} ${file.name} (${fmtSize(file.size)})`);
+
+  // Progress bubble
+  const msgs=document.getElementById('chatMessages');
+  const progWrap=document.createElement('div');progWrap.className='bubble bbot';
+  progWrap.innerHTML=`<div class="bi">⏳ מעלה קובץ... <strong>${file.name}</strong><div class="upload-prog"><div class="upload-prog-bar" id="upBar"></div></div></div>`;
+  msgs.appendChild(progWrap);msgs.scrollTop=msgs.scrollHeight;
+
+  // Animate bar (fake progress while uploading)
+  let pct=0;const timer=setInterval(()=>{pct=Math.min(pct+3,88);const bar=document.getElementById('upBar');if(bar)bar.style.width=pct+'%';},200);
+
+  try{
+    const {rawUrl}=await uploadFileToGH(file);
+    clearInterval(timer);msgs.removeChild(progWrap);
+
+    // Fill pending and enter chat flow
+    chatState.pending={
+      url:rawUrl,
+      type:'link',
+      category:'קישורים',
+      title:file.name.replace(/\.[^.]+$/,''),
+      description:`קובץ: ${file.name} (${fmtSize(file.size)})`,
+      notes:'',
+      isFile:true
+    };
+    chatState.phase='deadline';
+    addBotBubble(
+      `${ico} **${file.name}** עלה בהצלחה! ✅\n${fmtSize(file.size)}\n\nעד מתי צריך לטפל בזה?`,
+      ['היום','מחר','השבוע','ללא תאריך']
+    );
+  }catch(e){
+    clearInterval(timer);msgs.removeChild(progWrap);
+    addBotBubble('⚠️ שגיאה בהעלאת הקובץ.\nבדוק חיבור לאינטרנט ונסה שוב.');
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 // EDIT ITEM
