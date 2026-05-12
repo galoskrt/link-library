@@ -965,7 +965,8 @@ function openItem(id){
         ${item.status==='done'?'↩ בטל':'✓ סיים'}
       </button>
       <button class="mact rd" onclick="delItem('${id}')">מחק</button>
-    </div>`;
+    </div>
+    <button class="mact" onclick="closeItem()" style="width:100%;margin-top:8px">סגור</button>`;
   const m=document.getElementById('mItem');
   m.style.display='flex';requestAnimationFrame(()=>m.classList.add('open'));
 }
