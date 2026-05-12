@@ -246,6 +246,9 @@ main{flex:1;overflow:hidden;position:relative}
 .sinp:focus{border-color:var(--accent)}
 .shint{font-size:12px;color:var(--text3);line-height:1.55;margin-bottom:20px}
 .shint a{color:#60a5fa}
+select.sinp{-webkit-appearance:none;appearance:none;cursor:pointer}
+.edit-row{display:flex;gap:10px;margin-bottom:14px}
+.edit-row>div{flex:1}
 
 /* ══ TOAST ══════════════════════════════════════════════════ */
 #toast{
@@ -383,6 +386,51 @@ main{flex:1;overflow:hidden;position:relative}
   </div>
 </div>
 
+<!-- EDIT MODAL -->
+<div id="mEdit" class="moverlay" onclick="closeEdit()">
+  <div class="msheet" onclick="event.stopPropagation()">
+    <div class="mhandle"></div>
+    <div class="sttl">✏️ עריכה</div>
+    <div class="lf" style="margin-bottom:14px">
+      <label class="slbl">כותרת</label>
+      <input id="editTitle" class="sinp" type="text" placeholder="כותרת הפריט">
+    </div>
+    <div class="lf" style="margin-bottom:14px">
+      <label class="slbl">הערה / תיאור</label>
+      <textarea id="editDesc" class="sinp" rows="3" style="resize:vertical;min-height:72px" placeholder="מה צריך לעשות, מה חשוב לזכור..."></textarea>
+    </div>
+    <div class="edit-row">
+      <div>
+        <label class="slbl">עדיפות</label>
+        <select id="editPrio" class="sinp">
+          <option value="high">🔴 גבוהה</option>
+          <option value="medium">🟡 בינונית</option>
+          <option value="low">🟢 נמוכה</option>
+        </select>
+      </div>
+      <div>
+        <label class="slbl">סוג</label>
+        <select id="editType" class="sinp">
+          <option value="task">✅ משימה</option>
+          <option value="podcast">🎙️ פודקאסט</option>
+          <option value="meeting">📅 פגישה</option>
+          <option value="client">👤 לקוח</option>
+          <option value="link">🔗 קישור</option>
+          <option value="personal">🏠 אישי</option>
+        </select>
+      </div>
+    </div>
+    <div class="lf" style="margin-bottom:20px">
+      <label class="slbl">דדליין</label>
+      <input id="editDeadline" class="sinp" type="datetime-local" style="direction:ltr">
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="mact pr" onclick="saveEdit()">שמור שינויים</button>
+      <button class="mact" onclick="closeEdit()">ביטול</button>
+    </div>
+  </div>
+</div>
+
 <!-- TOAST -->
 <div id="toast"></div>
 
@@ -407,7 +455,7 @@ const TYPES={
 const PRIOS={high:{label:'גבוהה',dot:'🔴'},medium:{label:'בינונית',dot:'🟡'},low:{label:'נמוכה',dot:'🟢'}};
 const T2C={podcast:'פודקאסטים',meeting:'פגישות',client:'לקוחות',personal:'אישי',link:'קישורים',task:'משימות אישיות'};
 const DAYS=['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
-const DEF_CATS=['פודקאסטים','משימות אישיות','לקוחות','פגישות','קישורים','אישי'];
+const DEF_CATS=['פודקאסטים','משימות אישיות','משימות עסקיות','לקוחות','פגישות','קישורים','אישי'];
 
 let data=null,sha=null,sessionPass=null,currentView='lib';
 let chatState={phase:'idle',pending:{}};
@@ -599,10 +647,20 @@ async function handleChat(text){
 
   // Global commands (any phase)
   if(/^(מה יש|הראה|תראה).*היום|מה יש היום/i.test(text)){showTodayChat();return;}
-  if(text==='📚 עבור לספרייה'){showView('lib');return;}
+  if(text==='📚 עבור לספרייה'||text==='📚 הספרייה שלי'){showView('lib');return;}
   if(text==='💬 להוסיף עוד'){addBotBubble('מעולה! שלח לי את הפריט הבא 👇');return;}
+  if(text==='ביטול'){chatState={phase:'idle',pending:{}};addBotBubble('בסדר, בוטל 👍');return;}
+
+  // Edit open phase
+  if(phase==='edit_open'){
+    if(text==='✏️ פתח לעריכה'){editItem(chatState.pending.editId);chatState={phase:'idle',pending:{}};return;}
+    chatState={phase:'idle',pending:{}};await handleChat(text);return;
+  }
 
   if(phase==='idle'){
+    // Edit commands
+    if(/^(?:עדכן|שנה|ערוך|תעדכן|תשנה|תערוך)/i.test(text)){handleEditCommand(text);return;}
+
     addBotBubble('⏳ מנתח...');
     const parsed=await smartParse(text);
     removeLast();
@@ -676,9 +734,22 @@ async function handleChat(text){
     if(text.includes('גבוהה')||text.includes('🔴'))chatState.pending.priority='high';
     else if(text.includes('נמוכה')||text.includes('🟢'))chatState.pending.priority='low';
     else chatState.pending.priority='medium';
-    // Always ask for notes after priority
+    // For tasks → ask personal or business. For links → skip straight to notes.
+    if(chatState.pending.type==='task'){
+      chatState.phase='ctx';
+      addBotBubble('המשימה הזאת היא אישית או עסקית?',['🏠 אישית','💼 עסקית']);
+    } else {
+      chatState.phase='notes';
+      addBotBubble('יש משהו חשוב שתרצה להוסיף?\n(הערה אישית, מה בדיוק צריך לעשות)',['⏭️ לא, שמור']);
+    }
+    return;
+  }
+
+  if(phase==='ctx'){
+    if(text.includes('עסקית')||text.includes('💼'))chatState.pending.category='משימות עסקיות';
+    else chatState.pending.category='אישי';
     chatState.phase='notes';
-    addBotBubble('יש משהו חשוב שתרצה להוסיף?\n(כותרת, הערה אישית, מה בדיוק צריך לעשות)',['⏭️ לא, שמור']);
+    addBotBubble('יש משהו חשוב שתרצה להוסיף?\n(הערה אישית, מה בדיוק צריך לעשות)',['⏭️ לא, שמור']);
     return;
   }
 
@@ -802,8 +873,9 @@ function renderCard(item){
     <div class="card-ft">
       ${dl?`<div class="dl-chip${dl.overdue?' ov':dl.today?' tod':dl.diff<=2?' soon':''}">${dl.overdue?'⚠️':'⏰'} ${dl.str}</div>`:'<div></div>'}
       <div class="card-acts">
-        ${item.url?`<button class="cbtn lb" onclick="event.stopPropagation();openUrl('${esc(item.url)}')">פתח 🔗</button>`:''}
-        <button class="cbtn gb" onclick="event.stopPropagation();doneItem('${item.id}')">✓ סיים</button>
+        ${item.url?`<button class="cbtn lb" onclick="event.stopPropagation();openUrl('${esc(item.url)}')">🔗</button>`:''}
+        <button class="cbtn" onclick="event.stopPropagation();editItem('${item.id}')" style="color:var(--accent2)">✏️</button>
+        <button class="cbtn gb" onclick="event.stopPropagation();doneItem('${item.id}')">✓</button>
       </div>
     </div>
   </div>`;
@@ -874,11 +946,11 @@ function openItem(id){
     </div>
     <div class="macts">
       ${item.url?`<button class="mact pr" onclick="openUrl('${esc(item.url)}')">פתח 🔗</button>`:''}
+      <button class="mact" onclick="closeItem();editItem('${id}')" style="color:var(--accent2);border-color:rgba(255,126,226,.32)">✏️ ערוך</button>
       <button class="mact ${item.status==='done'?'':'gr'}" onclick="doneItem('${id}');closeItem()">
         ${item.status==='done'?'↩ בטל':'✓ סיים'}
       </button>
-      <button class="mact rd" onclick="delItem('${id}')">מחק 🗑️</button>
-      <button class="mact" onclick="closeItem()">סגור</button>
+      <button class="mact rd" onclick="delItem('${id}')">מחק</button>
     </div>`;
   const m=document.getElementById('mItem');
   m.style.display='flex';requestAnimationFrame(()=>m.classList.add('open'));
@@ -903,6 +975,111 @@ function delItem(id){
   saveData();closeItem();renderLib();renderCal();updateHeader();showToast('🗑️ נמחק');
 }
 function openUrl(url){window.open(url,'_blank');}
+
+// ═══════════════════════════════════════════════════════════
+// EDIT ITEM
+// ═══════════════════════════════════════════════════════════
+let editingId=null;
+function editItem(id){
+  const item=data.items.find(i=>i.id===id);if(!item)return;
+  editingId=id;
+  document.getElementById('editTitle').value=item.title||'';
+  document.getElementById('editDesc').value=item.description||'';
+  document.getElementById('editPrio').value=item.priority||'medium';
+  document.getElementById('editType').value=item.type||'task';
+  if(item.deadline){
+    const d=new Date(item.deadline);
+    const loc=new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+    document.getElementById('editDeadline').value=loc;
+  }else document.getElementById('editDeadline').value='';
+  const m=document.getElementById('mEdit');
+  m.style.display='flex';requestAnimationFrame(()=>m.classList.add('open'));
+}
+function closeEdit(){
+  const m=document.getElementById('mEdit');m.classList.remove('open');
+  setTimeout(()=>m.style.display='none',260);
+}
+function saveEdit(){
+  const item=data.items.find(i=>i.id===editingId);if(!item)return;
+  const t=document.getElementById('editTitle').value.trim();
+  if(t)item.title=t;
+  item.description=document.getElementById('editDesc').value.trim();
+  item.priority=document.getElementById('editPrio').value;
+  item.type=document.getElementById('editType').value;
+  item.category=T2C[item.type]||item.category;
+  const dl=document.getElementById('editDeadline').value;
+  item.deadline=dl?new Date(dl).toISOString():null;
+  saveData();renderLib();renderCal();updateHeader();
+  closeEdit();showToast('✅ עודכן!');
+}
+function applyItemChanges(id,changes){
+  const item=data.items.find(i=>i.id===id);if(!item)return false;
+  if(changes.title)item.title=changes.title;
+  if(changes.priority)item.priority=changes.priority;
+  if(changes.category)item.category=changes.category;
+  if('deadline'in changes)item.deadline=changes.deadline;
+  if(changes.description)item.description=changes.description;
+  saveData();renderLib();renderCal();updateHeader();return true;
+}
+
+// ═══════════════════════════════════════════════════════════
+// CHAT EDIT HELPERS
+// ═══════════════════════════════════════════════════════════
+function fuzzyFind(query,items){
+  const q=query.toLowerCase().trim();
+  return items.find(i=>i.title.toLowerCase()===q)||
+         items.find(i=>i.title.toLowerCase().includes(q))||
+         items.find(i=>q.split(' ').filter(w=>w.length>2).every(w=>i.title.toLowerCase().includes(w)));
+}
+function parseEditText(text){
+  const ch={};
+  // Title: "שם/כותרת ל-X" or after quotes
+  const tPats=[
+    /(?:שם|כותרת).*?ל[-\s]?["«"'](.+?)["»"']/i,
+    /(?:שם|כותרת).*?ל[-\s]"?([^\n,]{3,60})/i,
+  ];
+  for(const p of tPats){const m=text.match(p);if(m){ch.title=m[1].trim().replace(/["«»"']/g,'');break;}}
+  // Priority
+  const pm=text.match(/(?:דחיפות|עדיפות).*?(?:ל[-\s]?)?(גבוהה|בינוני|בינונית|נמוכה)/i)||
+           text.match(/(?:הורד|הנמך).*?(?:דחיפות|עדיפות).*?(בינוני|בינונית|נמוכה)/i)||
+           text.match(/(?:העלה|הגבה).*?(?:דחיפות|עדיפות)/i);
+  if(pm){
+    const p=pm[1]||'';
+    if(/גבוהה/.test(p)||(!pm[1]&&/העלה|הגבה/.test(text)))ch.priority='high';
+    else if(/בינוני/.test(p))ch.priority='medium';
+    else if(/נמוכה/.test(p))ch.priority='low';
+  }
+  return ch;
+}
+function handleEditCommand(text){
+  const items=data.items.filter(i=>i.status!=='done');
+  // Find item name in quotes or after "את ה?"
+  const qMatches=[...text.matchAll(/["«"'](.+?)["»"']/g)].map(m=>m[1].trim());
+  const atMatch=text.match(/את\s+ה?([֐-׿\w\s]{3,35})(?=\s+ת(?:עדכן|שנה|ערוך)|,)/);
+  if(atMatch)qMatches.unshift(atMatch[1].trim());
+  let found=null;
+  for(const q of qMatches){found=fuzzyFind(q,items);if(found)break;}
+  if(!found){
+    // Broad search in all words
+    const words=text.split(/[\s,."«»"']+/).filter(w=>w.length>3);
+    for(const w of words){found=items.find(i=>i.title.includes(w));if(found)break;}
+  }
+  if(!found){
+    addBotBubble('לא מצאתי את הפריט 🤔\n\nנסה לכתוב כך:\nעדכן "שם הפריט" — תשנה כותרת ל-"שם חדש"');
+    return;
+  }
+  const changes=parseEditText(text);
+  if(!Object.keys(changes).length){
+    addBotBubble(`מצאתי: **${found.title}** 📝\nמה לשנות?`,['✏️ פתח לעריכה','ביטול']);
+    chatState={phase:'edit_open',pending:{editId:found.id}};
+    return;
+  }
+  applyItemChanges(found.id,changes);
+  const list=[];
+  if(changes.title)list.push(`📝 שם: **${changes.title}**`);
+  if(changes.priority)list.push(`${PRIOS[changes.priority]?.dot} עדיפות: **${PRIOS[changes.priority]?.label}**`);
+  addBotBubble(`✅ עדכנתי את **${found.title}**:\n\n${list.join('\n')}`,['📚 עבור לספרייה']);
+}
 
 // ═══════════════════════════════════════════════════════════
 // HEADER
