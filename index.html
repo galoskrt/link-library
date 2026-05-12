@@ -485,7 +485,8 @@ function genId(){return Date.now().toString(36)+Math.random().toString(36).slice
 function mkItem(f){
   return{
     id:genId(),type:f.type||'task',title:f.title||'ללא כותרת',
-    url:f.url||null,description:f.description||'',
+    url:f.url||null,
+    description:f.notes||f.description||'',
     deadline:f.deadline||null,priority:f.priority||'medium',
     status:'pending',category:f.category||T2C[f.type]||'משימות אישיות',
     tags:[],createdAt:new Date().toISOString(),completedAt:null
@@ -599,33 +600,64 @@ async function handleChat(text){
   // Global commands (any phase)
   if(/^(מה יש|הראה|תראה).*היום|מה יש היום/i.test(text)){showTodayChat();return;}
   if(text==='📚 עבור לספרייה'){showView('lib');return;}
+  if(text==='💬 להוסיף עוד'){addBotBubble('מעולה! שלח לי את הפריט הבא 👇');return;}
 
   if(phase==='idle'){
     addBotBubble('⏳ מנתח...');
     const parsed=await smartParse(text);
     removeLast();
 
-    chatState.pending={...parsed,description:text};
-    let msg='';
-    if(parsed.url)msg+=`🔗 זיהיתי קישור\n`;
-    if(parsed.type)msg+=`${TYPES[parsed.type]?.icon} **${TYPES[parsed.type]?.label}**\n`;
-    if(parsed.title)msg+=`📝 ${parsed.title}\n`;
-    if(parsed.deadline)msg+=`⏰ ${fmtDl(parsed.deadline)?.str}\n`;
+    chatState.pending={...parsed,description:text,notes:''};
 
-    if(!parsed.title&&!parsed.url){
+    // Build a brief summary of what was detected
+    const parts=[];
+    if(parsed.url){let d='';try{d=new URL(parsed.url).hostname.replace(/^www\./,'');}catch{}parts.push(`🔗 ${d||'קישור'}`);}
+    if(parsed.type&&parsed.type!=='link'&&parsed.type!=='task')parts.push(`${TYPES[parsed.type]?.icon} ${TYPES[parsed.type]?.label}`);
+    if(parsed.deadline)parts.push(`⏰ ${fmtDl(parsed.deadline)?.str}`);
+    const summary=(parts.length?'זיהיתי: '+parts.join(' · ')+'\n\n':'');
+
+    // URL with no title → ask what it is first
+    if(parsed.url&&!parsed.title){
       chatState.phase='title';
-      addBotBubble((msg||'')+'\nמה הכותרת שתרצה לתת לזה?');
+      addBotBubble(`${summary}מה הקישור הזה? ✏️\n(כותרת קצרה — מה זה ומה צריך לעשות איתו)`);
       return;
     }
-    chatState.phase='deadline';
-    addBotBubble((msg||'')+'\nעד מתי?',['היום','מחר','השבוע','ללא תאריך']);
+    // No title and no URL → ask for title
+    if(!parsed.title){
+      chatState.phase='title';
+      addBotBubble('מה הכותרת שתרצה לתת לזה?');
+      return;
+    }
+    // Ask deadline if missing
+    if(!parsed.deadline){
+      chatState.phase='deadline';
+      addBotBubble(`${summary}📝 **${parsed.title}**\n\nעד מתי?`,['היום','מחר','השבוע','ללא תאריך']);
+      return;
+    }
+    // Ask priority if missing
+    if(!parsed.priority){
+      chatState.phase='priority';
+      addBotBubble(`${summary}מה הדחיפות?`,['🔴 גבוהה','🟡 בינונית','🟢 נמוכה']);
+      return;
+    }
+    // All extracted — go straight to notes
+    chatState.phase='notes';
+    addBotBubble(`${summary}יש משהו שתרצה להוסיף?\n(הערה, מה בדיוק לעשות, כל מידע חשוב)`,['⏭️ לא, שמור']);
     return;
   }
 
   if(phase==='title'){
     chatState.pending.title=text;
-    chatState.phase='deadline';
-    addBotBubble(`✏️ **${text}**\n\nעד מתי?`,['היום','מחר','השבוע','ללא תאריך']);
+    if(!chatState.pending.deadline){
+      chatState.phase='deadline';
+      addBotBubble(`✏️ **${text}**\n\nעד מתי?`,['היום','מחר','השבוע','ללא תאריך']);
+    } else if(!chatState.pending.priority){
+      chatState.phase='priority';
+      addBotBubble('מה הדחיפות?',['🔴 גבוהה','🟡 בינונית','🟢 נמוכה']);
+    } else {
+      chatState.phase='notes';
+      addBotBubble('יש משהו שתרצה להוסיף?\n(הערה, מה בדיוק לעשות)',['⏭️ לא, שמור']);
+    }
     return;
   }
 
@@ -644,7 +676,21 @@ async function handleChat(text){
     if(text.includes('גבוהה')||text.includes('🔴'))chatState.pending.priority='high';
     else if(text.includes('נמוכה')||text.includes('🟢'))chatState.pending.priority='low';
     else chatState.pending.priority='medium';
+    // Always ask for notes after priority
+    chatState.phase='notes';
+    addBotBubble('יש משהו חשוב שתרצה להוסיף?\n(כותרת, הערה אישית, מה בדיוק צריך לעשות)',['⏭️ לא, שמור']);
+    return;
+  }
 
+  if(phase==='notes'){
+    const skip=(text==='⏭️ לא, שמור'||text==='לא'||text==='skip');
+    if(!skip){
+      chatState.pending.notes=text;
+      // If the notes look like a title (short, no url), use it as title override
+      if(!chatState.pending.title||chatState.pending.title===chatState.pending.description){
+        if(text.length<=80&&!/https?:\/\//.test(text))chatState.pending.title=text;
+      }
+    }
     const item=mkItem(chatState.pending);
     data.items.unshift(item);
     chatState={phase:'idle',pending:{}};
@@ -654,6 +700,7 @@ async function handleChat(text){
     addBotBubble(
       `✅ **נשמר בספרייה!**\n\n`+
       `${TYPES[item.type]?.icon} ${item.title}\n`+
+      (item.description&&item.description!==item.title?`📝 ${item.description.slice(0,60)}${item.description.length>60?'...':''}\n`:'')+
       (dl?`⏰ ${dl.str}\n`:'')+
       `${PRIOS[item.priority]?.dot} עדיפות ${PRIOS[item.priority]?.label}`,
       ['📚 עבור לספרייה','💬 להוסיף עוד']
@@ -695,9 +742,7 @@ function chipClick(btn){
   const text=btn.textContent.trim();
   btn.closest('.chat-chips').innerHTML='';
   if(text==='📚 עבור לספרייה'){showView('lib');return;}
-  if(text==='💬 להוסיף עוד'){
-    addBotBubble('מעולה! שלח לי את הפריט הבא 👇');return;
-  }
+  if(text==='📚 הספרייה שלי'){showView('lib');return;}
   addUserBubble(text);
   setTimeout(()=>handleChat(text),220);
 }
